@@ -2,7 +2,7 @@
 Training setup for deep test time method.
 ==========================================
 
-This example illustrates the use of deep test timeS methods in Skada.
+This example illustrates the use of deep test time methods in Skada.
 on a simple image classification task.
 """
 
@@ -17,7 +17,9 @@ import torch
 from torch.utils.data import DataLoader
 
 from skada.datasets import load_mnist_usps
+from skada.deep._test_time import TestTimeCriterion, TestTimeNet
 from skada.deep.base import DeepDADataset
+from skada.deep.callbacks import PseudoLabeling
 from skada.deep.losses import (
     CrossEntropyLabelSmooth,
     shot_full_loss,
@@ -45,13 +47,42 @@ batch_size = 256
 lr = 1e-4
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+model = SHOTNet(class_num=NUM_CLASSES)
+
+
+# %%
+# Training with skorch
+# ----------------------------------------------------------------------------
+
+criterion = TestTimeCriterion(
+    CrossEntropyLabelSmooth(num_classes=NUM_CLASSES), shot_full_loss
+)
+optimizer_adapt = torch.optim.Adam(
+    [
+        {"params": model.feature_extractor.named_parameters()},
+        {"params": model.bottleneck.named_parameters()},
+    ],
+    lr=lr,
+)
+
+model_test_time = TestTimeNet(
+    model,
+    criterion,
+    optimizer_adapt,
+    max_epochs,
+    *[model.feature_extractor.named_parameters(), model.bottleneck.named_parameters()],
+    "classifier",
+    callbacks=[PseudoLabeling],  # only on fit adapt
+)
+model_test_time.fit(source_dataset)
+model_test_time.fit_adapt(target_dataset)
+
 
 # %%
 # Training with torch
 # ----------------------------------------------------------------------------
 
-
-model = SHOTNet(class_num=NUM_CLASSES).to(device)
+model = model.to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 source_dataloader = DataLoader(source_dataset, batch_size=batch_size, shuffle=True)
 loss_fn = CrossEntropyLabelSmooth(num_classes=NUM_CLASSES)
@@ -83,7 +114,7 @@ accuracy_no_adapation = (target_dataset.y.numpy() == target_pred).mean()
 print(f"Accuracy on target domain without domain adaptation: {accuracy_no_adapation}")
 
 model.classifier.eval()
-optimizer = torch.optim.Adam(
+optimizer_adapt = torch.optim.Adam(
     [
         {"params": model.feature_extractor.named_parameters()},
         {"params": model.bottleneck.named_parameters()},
@@ -102,7 +133,7 @@ for epoch in range(max_epochs):
         inputs, labels = inputs, labels.to(device)
 
         # Zero the gradients
-        optimizer.zero_grad()
+        optimizer_adapt.zero_grad()
 
         if batch_idx % interval_iter == 0:
             with torch.no_grad():
@@ -120,7 +151,7 @@ for epoch in range(max_epochs):
 
         # Backward pass and optimization
         loss.backward()
-        optimizer.step()
+        optimizer_adapt.step()
 
         running_loss += loss.item()
     print(f"Epoch: {epoch} - Loss: {running_loss / batch_idx}")
